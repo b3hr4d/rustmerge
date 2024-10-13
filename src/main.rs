@@ -338,7 +338,7 @@ fn process_directory(dir: &Path, output: &mut Vec<u8>, depth: usize) {
 
         if path.is_file() && path.extension().map_or(false, |ext| ext == "rs") {
             let file_name = path.file_name().unwrap().to_str().unwrap();
-            if file_name != "lib.rs" && file_name != "main.rs" {
+            if file_name != "lib.rs" && file_name != "main.rs" && file_name != "mod.rs" {
                 let module_name = path.file_stem().unwrap().to_str().unwrap();
                 let escaped_module_name = escape_rust_keyword(module_name);
                 writeln!(
