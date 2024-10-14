@@ -370,7 +370,7 @@ pub mod nested_mod;
         fs::write(
             nested_mod_dir.join("nested_mod.rs"),
             r#"
-fn nested_function() -> i32 {
+pub fn nested_function() -> i32 {
     20
 }
 "#,
@@ -379,10 +379,11 @@ fn nested_function() -> i32 {
         let mut module_structure = HashMap::new();
         parse_file_and_submodules(&src_dir.join("main.rs"), "crate", &mut module_structure)?;
 
-        for (module_path, module_info) in &module_structure {
-            println!("Module path: {}", module_path);
-            println!("Module content: {}", module_info.content);
-        }
+        let processed = process_package(&src_dir, &module_structure)?;
+
+        let formatted_code = format_rust_code(&processed.to_string())?;
+
+        println!("{}", formatted_code);
 
         Ok(())
     }

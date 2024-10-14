@@ -173,45 +173,133 @@ fn parse_file_and_submodules(
     let content = fs::read_to_string(file_path)?;
     let file: File = syn::parse_file(&content)?;
 
-    let tokens = parse_with_cfg_items(&file);
+    let mut module_content = TokenStream::new();
 
-    module_structure.insert(
-        module_path.to_string(),
-        ModuleInfo {
-            content: tokens.clone(),
-        },
-    );
-
-    parse_module_items(&file.items, file_path, module_path, module_structure)?;
-
-    Ok(())
-}
-
-fn parse_with_cfg_items(file: &File) -> TokenStream {
-    let mut tokens = TokenStream::new();
     for item in &file.items {
         if !is_test_module(item) {
             match item {
                 Item::Mod(item_mod) => {
-                    let cfg_attrs = item_mod
-                        .attrs
-                        .iter()
-                        .filter(|attr| attr.path().is_ident("cfg"))
-                        .cloned()
-                        .collect::<Vec<_>>();
+                    let submodule_name = &item_mod.ident;
+                    let submodule_path = if module_path == "crate" {
+                        submodule_name.to_string()
+                    } else {
+                        format!("{}::{}", module_path, submodule_name)
+                    };
 
-                    if !cfg_attrs.is_empty() {
-                        tokens.extend(quote::quote! {
-                            #(#cfg_attrs)*
-                        });
+                    if let Some((_, items)) = &item_mod.content {
+                        // Inline module
+                        let mut submodule_content = TokenStream::new();
+                        for sub_item in items {
+                            sub_item.to_tokens(&mut submodule_content);
+                        }
+                        let expanded = quote! {
+                            pub mod #submodule_name {
+                                #submodule_content
+                            }
+                        };
+                        expanded.to_tokens(&mut module_content);
+
+                        // Recursively parse nested inline modules
+                        parse_module_items(items, file_path, &submodule_path, module_structure)?;
+                    } else {
+                        // External module file
+                        let submodule_file =
+                            file_path.with_file_name(format!("{}.rs", submodule_name));
+                        if submodule_file.exists() {
+                            parse_file_and_submodules(
+                                &submodule_file,
+                                &submodule_path,
+                                module_structure,
+                            )?;
+                        } else {
+                            let submodule_dir =
+                                file_path.with_file_name(submodule_name.to_string());
+                            let mod_file = submodule_dir.join("mod.rs");
+                            if mod_file.exists() {
+                                parse_file_and_submodules(
+                                    &mod_file,
+                                    &submodule_path,
+                                    module_structure,
+                                )?;
+                            }
+                        }
+
+                        // Add the parsed submodule content
+                        if let Some(submodule_info) = module_structure.get(&submodule_path) {
+                            let submodule_content = &submodule_info.content;
+                            let expanded = quote! {
+                                pub mod #submodule_name {
+                                    #submodule_content
+                                }
+                            };
+                            expanded.to_tokens(&mut module_content);
+                        }
                     }
-                    item_mod.to_tokens(&mut tokens);
                 }
-                _ => item.to_tokens(&mut tokens),
+                _ => item.to_tokens(&mut module_content),
             }
         }
     }
-    tokens
+
+    module_structure.insert(
+        module_path.to_string(),
+        ModuleInfo {
+            content: module_content,
+        },
+    );
+
+    Ok(())
+}
+
+fn parse_module_items(
+    items: &[Item],
+    file_path: &Path,
+    module_path: &str,
+    module_structure: &mut HashMap<String, ModuleInfo>,
+) -> Result<()> {
+    let mut module_content = TokenStream::new();
+
+    for item in items {
+        if !is_test_module(item) {
+            match item {
+                Item::Mod(item_mod) => {
+                    let submodule_name = &item_mod.ident;
+                    let submodule_path = format!("{}::{}", module_path, submodule_name);
+
+                    if let Some((_, sub_items)) = &item_mod.content {
+                        let mut submodule_content = TokenStream::new();
+                        for sub_item in sub_items {
+                            sub_item.to_tokens(&mut submodule_content);
+                        }
+                        let expanded = quote! {
+                            pub mod #submodule_name {
+                                #submodule_content
+                            }
+                        };
+                        expanded.to_tokens(&mut module_content);
+
+                        // Recursively parse nested inline modules
+                        parse_module_items(
+                            sub_items,
+                            file_path,
+                            &submodule_path,
+                            module_structure,
+                        )?;
+                    }
+                }
+                _ => item.to_tokens(&mut module_content),
+            }
+        }
+    }
+
+    module_structure.insert(
+        module_path.to_string(),
+        ModuleInfo {
+            content: module_content,
+        },
+    );
+
+    Ok(())
 }
 
 fn is_test_module(item: &Item) -> bool {
@@ -222,90 +310,14 @@ fn is_test_module(item: &Item) -> bool {
     }
 }
 
-fn parse_module_items(
-    items: &[Item],
-    file_path: &Path,
-    module_path: &str,
-    module_structure: &mut HashMap<String, ModuleInfo>,
-) -> Result<()> {
-    let mut module_items = Vec::new();
+fn merge_modules(module_structure: &HashMap<String, ModuleInfo>) -> TokenStream {
+    let mut merged_content = TokenStream::new();
 
-    for item in items {
-        if let Item::Mod(item_mod) = item {
-            if !is_test_module(item) {
-                let submodule_name = item_mod.ident.clone();
-                let submodule_path = if module_path == "crate" {
-                    submodule_name.to_string()
-                } else {
-                    format!("{}::{}", module_path, submodule_name)
-                };
-
-                let cfg_attrs = item_mod
-                    .attrs
-                    .iter()
-                    .filter(|attr| attr.path().is_ident("cfg"))
-                    .cloned()
-                    .collect::<Vec<_>>();
-
-                if let Some((_, items)) = &item_mod.content {
-                    let submodule_tokens = quote::quote! {
-                        #(#cfg_attrs)*
-                        pub mod #submodule_name {
-                            #(#items)*
-                        }
-                    };
-                    module_items.push(submodule_tokens);
-                    parse_module_items(items, file_path, &submodule_path, module_structure)?;
-                } else {
-                    let parent = file_path
-                        .parent()
-                        .context("Failed to get parent directory")?;
-                    let file_module_path = parent
-                        .join(&submodule_name.to_string())
-                        .with_extension("rs");
-                    let dir_module_path = parent.join(&submodule_name.to_string()).join("mod.rs");
-
-                    if file_module_path.exists() {
-                        parse_file_and_submodules(
-                            &file_module_path,
-                            &submodule_path,
-                            module_structure,
-                        )?;
-                    } else if dir_module_path.exists() {
-                        parse_file_and_submodules(
-                            &dir_module_path,
-                            &submodule_path,
-                            module_structure,
-                        )?;
-                    } else {
-                        let empty_mod = quote::quote! {
-                            #(#cfg_attrs)*
-                            pub mod #submodule_name {}
-                        };
-                        module_items.push(empty_mod);
-                    }
-                }
-            }
-        } else {
-            let submodule_tokens = quote::quote! {
-                #item
-            };
-            module_items.push(submodule_tokens);
-        }
+    if let Some(crate_module) = module_structure.get("crate") {
+        merged_content.extend(crate_module.content.clone());
     }
 
-    let module_tokens = quote::quote! {
-        #(#module_items)*
-    };
-
-    module_structure.insert(
-        module_path.to_string(),
-        ModuleInfo {
-            content: module_tokens,
-        },
-    );
-
-    Ok(())
+    merged_content
 }
 
 fn process_package(
