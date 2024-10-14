@@ -13,7 +13,6 @@ use syn::File;
 use syn::{Item, ItemMod};
 
 struct ModuleInfo {
-    path: PathBuf,
     content: TokenStream,
 }
 
@@ -25,17 +24,12 @@ fn main() -> Result<()> {
     }
 
     let current_dir = env::current_dir().context("Failed to get current directory")?;
-    let package_name = determine_package_name(&current_dir, &args)?;
-    let src_dir = find_src_dir(&current_dir)?;
-    println!("Source directory: {:?}", src_dir);
+    let (package_name, package_path) = determine_package(&current_dir, &args)?;
+    let src_dir = find_src_dir(&package_path)?;
     let output_file = create_output_file(&current_dir, &package_name)?;
 
     let module_structure = parse_module_structure(&src_dir)?;
-    println!("Module structure keys: {:?}", module_structure.keys());
-
     let merged_content = process_package(&src_dir, &package_name, &module_structure)?;
-
-    println!("Merged content:\n{}", merged_content.to_string());
 
     fs::write(&output_file, merged_content.to_string())?;
     println!("Merged Rust program created in {:?}", output_file);
@@ -44,24 +38,48 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn determine_package_name(current_dir: &Path, args: &[String]) -> Result<String> {
-    if args.len() > 2 {
-        Ok(args[2].clone())
+fn determine_package(current_dir: &Path, args: &[String]) -> Result<(String, PathBuf)> {
+    let cargo_toml = current_dir.join("Cargo.toml");
+    let content = fs::read_to_string(&cargo_toml)?;
+    let parsed_toml: toml::Value = toml::from_str(&content)?;
+
+    if let Some(workspace) = parsed_toml.get("workspace") {
+        let members = workspace
+            .get("members")
+            .and_then(|m| m.as_array())
+            .context("Failed to get workspace members")?;
+
+        if args.len() > 2 {
+            let package_name = &args[2];
+            if members.iter().any(|m| m.as_str() == Some(package_name)) {
+                Ok((package_name.clone(), current_dir.join(package_name)))
+            } else {
+                Err(anyhow::anyhow!(
+                    "Package '{}' not found in workspace",
+                    package_name
+                ))
+            }
+        } else {
+            println!("This is a workspace. Available packages:");
+            for (i, member) in members.iter().enumerate() {
+                println!("{}. {}", i + 1, member.as_str().unwrap());
+            }
+            println!("Please run the command again with the package name.");
+            process::exit(1);
+        }
     } else {
-        let cargo_toml = current_dir.join("Cargo.toml");
-        let content = fs::read_to_string(cargo_toml)?;
-        let parsed_toml: toml::Value = toml::from_str(&content)?;
+        // Single package project
         parsed_toml
             .get("package")
             .and_then(|p| p.get("name"))
             .and_then(|n| n.as_str())
-            .map(String::from)
+            .map(|name| (name.to_string(), current_dir.to_path_buf()))
             .context("Failed to determine package name")
     }
 }
 
-fn find_src_dir(current_dir: &Path) -> Result<PathBuf> {
-    let cargo_toml = current_dir.join("Cargo.toml");
+fn find_src_dir(package_path: &Path) -> Result<PathBuf> {
+    let cargo_toml = package_path.join("Cargo.toml");
     let content = fs::read_to_string(cargo_toml)?;
     let parsed_toml: toml::Value = toml::from_str(&content)?;
 
@@ -69,8 +87,8 @@ fn find_src_dir(current_dir: &Path) -> Result<PathBuf> {
         .get("package")
         .and_then(|p| p.get("src"))
         .and_then(|s| s.as_str())
-        .map(|src| current_dir.join(src))
-        .or_else(|| Some(current_dir.join("src")))
+        .map(|src| package_path.join(src))
+        .or_else(|| Some(package_path.join("src")))
         .context("Failed to find src directory")
 }
 
@@ -85,7 +103,6 @@ fn create_output_file(current_dir: &Path, package_name: &str) -> Result<PathBuf>
 fn parse_module_structure(src_dir: &Path) -> Result<HashMap<String, ModuleInfo>> {
     let mut module_structure = HashMap::new();
 
-    // Handle the root file (main.rs or lib.rs)
     let root_file_path = if src_dir.join("lib.rs").exists() {
         src_dir.join("lib.rs")
     } else if src_dir.join("main.rs").exists() {
@@ -98,7 +115,6 @@ fn parse_module_structure(src_dir: &Path) -> Result<HashMap<String, ModuleInfo>>
 
     parse_file_and_submodules(&root_file_path, "crate", &mut module_structure)?;
 
-    println!("Module structure: {:?}", module_structure.keys());
     Ok(module_structure)
 }
 
@@ -107,17 +123,14 @@ fn parse_file_and_submodules(
     module_path: &str,
     module_structure: &mut HashMap<String, ModuleInfo>,
 ) -> Result<()> {
-    println!("Parsing file: {:?}", file_path);
     let content = fs::read_to_string(file_path)?;
     let file: File = syn::parse_file(&content)?;
 
-    // Custom parsing to include cfg attributes
     let tokens = parse_with_cfg_items(&file);
 
     module_structure.insert(
         module_path.to_string(),
         ModuleInfo {
-            path: file_path.to_path_buf(),
             content: tokens.clone(),
         },
     );
@@ -167,7 +180,6 @@ fn parse_module_items(
                 format!("{}::{}", module_path, submodule_name)
             };
 
-            // Include cfg attributes in the module content
             let cfg_attrs = item_mod
                 .attrs
                 .iter()
@@ -176,7 +188,6 @@ fn parse_module_items(
                 .collect::<Vec<_>>();
 
             if let Some((_, items)) = &item_mod.content {
-                // Inline module
                 let submodule_tokens = quote::quote! {
                     #(#cfg_attrs)*
                     #item_mod
@@ -184,14 +195,11 @@ fn parse_module_items(
                 module_structure.insert(
                     submodule_path.clone(),
                     ModuleInfo {
-                        path: file_path.to_path_buf(),
                         content: submodule_tokens,
                     },
                 );
-                // Recursively parse inline submodules
                 parse_module_items(items, file_path, &submodule_path, module_structure)?;
             } else {
-                // Check for external module file or directory
                 let parent = file_path
                     .parent()
                     .context("Failed to get parent directory")?;
@@ -207,19 +215,12 @@ fn parse_module_items(
                 } else if dir_module_path.exists() {
                     parse_file_and_submodules(&dir_module_path, &submodule_path, module_structure)?;
                 } else {
-                    println!("Warning: Module not found: {}", submodule_name);
-                    // Add an empty module to preserve the structure, including cfg attributes
                     let empty_mod = quote::quote! {
                         #(#cfg_attrs)*
                         pub mod #submodule_name {}
                     };
-                    module_structure.insert(
-                        submodule_path.clone(),
-                        ModuleInfo {
-                            path: PathBuf::new(),
-                            content: empty_mod,
-                        },
-                    );
+                    module_structure
+                        .insert(submodule_path.clone(), ModuleInfo { content: empty_mod });
                 }
             }
         }
@@ -232,35 +233,23 @@ fn process_package(
     package_name: &str,
     module_structure: &HashMap<String, ModuleInfo>,
 ) -> Result<TokenStream> {
-    println!("Processing package: {}", package_name);
-    println!("Source directory: {:?}", src_dir);
-    println!("Number of modules: {}", module_structure.len());
-
     let mut merged_content = quote! {
         // Package: #package_name
         // This file was automatically generated by cargo-rustmerge
     };
 
     let root_module = if src_dir.join("lib.rs").exists() {
-        println!("Found lib.rs");
         "crate"
     } else if src_dir.join("main.rs").exists() {
-        println!("Found main.rs");
         "crate"
     } else {
-        println!("Neither lib.rs nor main.rs found");
         return Err(anyhow::anyhow!(
             "Neither lib.rs nor main.rs found in the src directory"
         ));
     };
 
-    println!("Processing root module: {}", root_module);
     process_module(root_module, module_structure, &mut merged_content)?;
 
-    println!(
-        "Merged content size: {} bytes",
-        merged_content.to_string().len()
-    );
     Ok(merged_content)
 }
 
@@ -269,7 +258,6 @@ fn process_module(
     module_structure: &HashMap<String, ModuleInfo>,
     output: &mut TokenStream,
 ) -> Result<()> {
-    println!("Processing module: {}", module_path);
     if let Some(module_info) = module_structure.get(module_path) {
         let file = syn::parse_file(&module_info.content.to_string())?;
 
@@ -286,12 +274,10 @@ fn process_module(
                     process_module(&submodule_path, module_structure, &mut submodule_content)?;
 
                     let expanded = if submodule_content.is_empty() && content.is_none() {
-                        // If the submodule is empty and has no inline content, just declare it
                         quote! {
                             pub mod #ident;
                         }
                     } else {
-                        // If the submodule has content or inline content, include it
                         quote! {
                             pub mod #ident {
                                 #submodule_content
@@ -303,8 +289,6 @@ fn process_module(
                 _ => item.to_tokens(output),
             }
         }
-    } else {
-        println!("No module info found for {}", module_path);
     }
 
     Ok(())
