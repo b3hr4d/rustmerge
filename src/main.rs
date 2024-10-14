@@ -310,16 +310,6 @@ fn is_test_module(item: &Item) -> bool {
     }
 }
 
-fn merge_modules(module_structure: &HashMap<String, ModuleInfo>) -> TokenStream {
-    let mut merged_content = TokenStream::new();
-
-    if let Some(crate_module) = module_structure.get("crate") {
-        merged_content.extend(crate_module.content.clone());
-    }
-
-    merged_content
-}
-
 fn process_package(
     src_dir: &Path,
     module_structure: &HashMap<String, ModuleInfo>,
