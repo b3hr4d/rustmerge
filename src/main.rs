@@ -3,8 +3,11 @@ mod test;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process;
+use std::process::Command;
+use std::process::Stdio;
 
 use anyhow::{Context, Result};
 use proc_macro2::TokenStream;
@@ -20,7 +23,7 @@ fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 || args[1] != "rustmerge" {
         eprintln!("Usage: cargo rustmerge [<package_name>]");
-        process::exit(1);
+        std::process::exit(1);
     }
 
     let current_dir = env::current_dir().context("Failed to get current directory")?;
@@ -31,8 +34,13 @@ fn main() -> Result<()> {
     let module_structure = parse_module_structure(&src_dir)?;
     let merged_content = process_package(&src_dir, &module_structure)?;
 
-    fs::write(&output_file, merged_content.to_string())?;
-    println!("Merged Rust program created in {:?}", output_file);
+    let formatted_content = format_rust_code(&merged_content.to_string())?;
+
+    fs::write(&output_file, formatted_content)?;
+    println!(
+        "Merged and formatted Rust program created in {:?}",
+        output_file
+    );
     println!("File size: {} bytes", fs::metadata(&output_file)?.len());
 
     Ok(())
@@ -149,7 +157,7 @@ fn parse_with_cfg_items(file: &File) -> TokenStream {
                     let cfg_attrs = item_mod
                         .attrs
                         .iter()
-                        .filter(|attr| attr.path.is_ident("cfg"))
+                        .filter(|attr| attr.path().is_ident("cfg"))
                         .cloned()
                         .collect::<Vec<_>>();
 
@@ -194,7 +202,7 @@ fn parse_module_items(
                 let cfg_attrs = item_mod
                     .attrs
                     .iter()
-                    .filter(|attr| attr.path.is_ident("cfg"))
+                    .filter(|attr| attr.path().is_ident("cfg"))
                     .cloned()
                     .collect::<Vec<_>>();
 
@@ -309,4 +317,33 @@ fn process_module(
     }
 
     Ok(())
+}
+
+fn format_rust_code(code: &str) -> Result<String> {
+    let mut rustfmt = Command::new("rustfmt")
+        .arg("--edition=2021")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .context("Failed to spawn rustfmt")?;
+
+    {
+        let stdin = rustfmt.stdin.as_mut().expect("Failed to open stdin");
+        stdin
+            .write_all(code.as_bytes())
+            .context("Failed to write to rustfmt stdin")?;
+    }
+
+    let output = rustfmt
+        .wait_with_output()
+        .context("Failed to read rustfmt output")?;
+
+    if output.status.success() {
+        Ok(String::from_utf8(output.stdout).context("rustfmt output was not valid UTF-8")?)
+    } else {
+        Err(anyhow::anyhow!(
+            "rustfmt failed: {:?}",
+            String::from_utf8_lossy(&output.stderr)
+        ))
+    }
 }
