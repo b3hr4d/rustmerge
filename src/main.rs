@@ -29,7 +29,7 @@ fn main() -> Result<()> {
     let output_file = create_output_file(&current_dir, &package_name)?;
 
     let module_structure = parse_module_structure(&src_dir)?;
-    let merged_content = process_package(&src_dir, &package_name, &module_structure)?;
+    let merged_content = process_package(&src_dir, &module_structure)?;
 
     fs::write(&output_file, merged_content.to_string())?;
     println!("Merged Rust program created in {:?}", output_file);
@@ -143,26 +143,36 @@ fn parse_file_and_submodules(
 fn parse_with_cfg_items(file: &File) -> TokenStream {
     let mut tokens = TokenStream::new();
     for item in &file.items {
-        match item {
-            Item::Mod(item_mod) => {
-                let cfg_attrs = item_mod
-                    .attrs
-                    .iter()
-                    .filter(|attr| attr.path.is_ident("cfg"))
-                    .cloned()
-                    .collect::<Vec<_>>();
+        if !is_test_module(item) {
+            match item {
+                Item::Mod(item_mod) => {
+                    let cfg_attrs = item_mod
+                        .attrs
+                        .iter()
+                        .filter(|attr| attr.path.is_ident("cfg"))
+                        .cloned()
+                        .collect::<Vec<_>>();
 
-                if !cfg_attrs.is_empty() {
-                    tokens.extend(quote::quote! {
-                        #(#cfg_attrs)*
-                    });
+                    if !cfg_attrs.is_empty() {
+                        tokens.extend(quote::quote! {
+                            #(#cfg_attrs)*
+                        });
+                    }
+                    item_mod.to_tokens(&mut tokens);
                 }
-                item_mod.to_tokens(&mut tokens);
+                _ => item.to_tokens(&mut tokens),
             }
-            _ => item.to_tokens(&mut tokens),
         }
     }
     tokens
+}
+
+fn is_test_module(item: &Item) -> bool {
+    if let Item::Mod(item_mod) = item {
+        item_mod.ident == "test" || item_mod.ident == "tests"
+    } else {
+        false
+    }
 }
 
 fn parse_module_items(
@@ -173,54 +183,60 @@ fn parse_module_items(
 ) -> Result<()> {
     for item in items {
         if let Item::Mod(item_mod) = item {
-            let submodule_name = item_mod.ident.to_string();
-            let submodule_path = if module_path == "crate" {
-                submodule_name.clone()
-            } else {
-                format!("{}::{}", module_path, submodule_name)
-            };
-
-            let cfg_attrs = item_mod
-                .attrs
-                .iter()
-                .filter(|attr| attr.path.is_ident("cfg"))
-                .cloned()
-                .collect::<Vec<_>>();
-
-            if let Some((_, items)) = &item_mod.content {
-                let submodule_tokens = quote::quote! {
-                    #(#cfg_attrs)*
-                    #item_mod
-                };
-                module_structure.insert(
-                    submodule_path.clone(),
-                    ModuleInfo {
-                        content: submodule_tokens,
-                    },
-                );
-                parse_module_items(items, file_path, &submodule_path, module_structure)?;
-            } else {
-                let parent = file_path
-                    .parent()
-                    .context("Failed to get parent directory")?;
-                let file_module_path = parent.join(&submodule_name).with_extension("rs");
-                let dir_module_path = parent.join(&submodule_name).join("mod.rs");
-
-                if file_module_path.exists() {
-                    parse_file_and_submodules(
-                        &file_module_path,
-                        &submodule_path,
-                        module_structure,
-                    )?;
-                } else if dir_module_path.exists() {
-                    parse_file_and_submodules(&dir_module_path, &submodule_path, module_structure)?;
+            if !is_test_module(item) {
+                let submodule_name = item_mod.ident.to_string();
+                let submodule_path = if module_path == "crate" {
+                    submodule_name.clone()
                 } else {
-                    let empty_mod = quote::quote! {
+                    format!("{}::{}", module_path, submodule_name)
+                };
+
+                let cfg_attrs = item_mod
+                    .attrs
+                    .iter()
+                    .filter(|attr| attr.path.is_ident("cfg"))
+                    .cloned()
+                    .collect::<Vec<_>>();
+
+                if let Some((_, items)) = &item_mod.content {
+                    let submodule_tokens = quote::quote! {
                         #(#cfg_attrs)*
-                        pub mod #submodule_name {}
+                        #item_mod
                     };
-                    module_structure
-                        .insert(submodule_path.clone(), ModuleInfo { content: empty_mod });
+                    module_structure.insert(
+                        submodule_path.clone(),
+                        ModuleInfo {
+                            content: submodule_tokens,
+                        },
+                    );
+                    parse_module_items(items, file_path, &submodule_path, module_structure)?;
+                } else {
+                    let parent = file_path
+                        .parent()
+                        .context("Failed to get parent directory")?;
+                    let file_module_path = parent.join(&submodule_name).with_extension("rs");
+                    let dir_module_path = parent.join(&submodule_name).join("mod.rs");
+
+                    if file_module_path.exists() {
+                        parse_file_and_submodules(
+                            &file_module_path,
+                            &submodule_path,
+                            module_structure,
+                        )?;
+                    } else if dir_module_path.exists() {
+                        parse_file_and_submodules(
+                            &dir_module_path,
+                            &submodule_path,
+                            module_structure,
+                        )?;
+                    } else {
+                        let empty_mod = quote::quote! {
+                            #(#cfg_attrs)*
+                            pub mod #submodule_name {}
+                        };
+                        module_structure
+                            .insert(submodule_path.clone(), ModuleInfo { content: empty_mod });
+                    }
                 }
             }
         }
@@ -230,7 +246,6 @@ fn parse_module_items(
 
 fn process_package(
     src_dir: &Path,
-    package_name: &str,
     module_structure: &HashMap<String, ModuleInfo>,
 ) -> Result<TokenStream> {
     let mut merged_content = quote! {
@@ -262,31 +277,33 @@ fn process_module(
         let file = syn::parse_file(&module_info.content.to_string())?;
 
         for item in file.items {
-            match item {
-                Item::Mod(ItemMod { ident, content, .. }) => {
-                    let submodule_path = if module_path == "crate" {
-                        ident.to_string()
-                    } else {
-                        format!("{}::{}", module_path, ident)
-                    };
+            if !is_test_module(&item) {
+                match item {
+                    Item::Mod(ItemMod { ident, content, .. }) => {
+                        let submodule_path = if module_path == "crate" {
+                            ident.to_string()
+                        } else {
+                            format!("{}::{}", module_path, ident)
+                        };
 
-                    let mut submodule_content = TokenStream::new();
-                    process_module(&submodule_path, module_structure, &mut submodule_content)?;
+                        let mut submodule_content = TokenStream::new();
+                        process_module(&submodule_path, module_structure, &mut submodule_content)?;
 
-                    let expanded = if submodule_content.is_empty() && content.is_none() {
-                        quote! {
-                            pub mod #ident;
-                        }
-                    } else {
-                        quote! {
-                            pub mod #ident {
-                                #submodule_content
+                        let expanded = if submodule_content.is_empty() && content.is_none() {
+                            quote! {
+                                pub mod #ident;
                             }
-                        }
-                    };
-                    expanded.to_tokens(output);
+                        } else {
+                            quote! {
+                                pub mod #ident {
+                                    #submodule_content
+                                }
+                            }
+                        };
+                        expanded.to_tokens(output);
+                    }
+                    _ => item.to_tokens(output),
                 }
-                _ => item.to_tokens(output),
             }
         }
     }
