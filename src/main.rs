@@ -5,7 +5,6 @@ use std::env;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process;
 use std::process::Command;
 use std::process::Stdio;
 
@@ -19,23 +18,27 @@ struct ModuleInfo {
     content: TokenStream,
 }
 
+struct Args {
+    package_name: Option<String>,
+    output_path: Option<PathBuf>,
+}
+
 fn main() -> Result<()> {
-    let args: Vec<String> = env::args().collect();
-    if args.len() < 2 || args[1] != "rustmerge" {
-        eprintln!("Usage: cargo rustmerge [<package_name>]");
-        std::process::exit(1);
-    }
+    let args = parse_args()?;
 
     let current_dir = env::current_dir().context("Failed to get current directory")?;
-    let (package_name, package_path) = determine_package(&current_dir, &args)?;
+    let (package_name, package_path) = determine_package(&current_dir, &args.package_name)?;
     let src_dir = find_src_dir(&package_path)?;
-    let output_file = create_output_file(&current_dir, &package_name)?;
+    let output_file = args
+        .output_path
+        .unwrap_or_else(|| create_output_file(&current_dir, &package_name));
 
     let module_structure = parse_module_structure(&src_dir)?;
     let merged_content = process_package(&src_dir, &module_structure)?;
 
     let formatted_content = format_rust_code(&merged_content.to_string())?;
 
+    fs::create_dir_all(output_file.parent().unwrap())?;
     fs::write(&output_file, formatted_content)?;
     println!(
         "Merged and formatted Rust program created in {:?}",
@@ -46,37 +49,72 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn determine_package(current_dir: &Path, args: &[String]) -> Result<(String, PathBuf)> {
-    let cargo_toml = current_dir.join("Cargo.toml");
-    let content = fs::read_to_string(&cargo_toml)?;
-    let parsed_toml: toml::Value = toml::from_str(&content)?;
+fn parse_args() -> Result<Args> {
+    let args: Vec<String> = env::args().collect();
+    if args.len() < 2 || args[1] != "rustmerge" {
+        eprintln!("Usage: cargo rustmerge [<package_name>] [--output <path>]");
+        std::process::exit(1);
+    }
 
-    if let Some(workspace) = parsed_toml.get("workspace") {
-        let members = workspace
-            .get("members")
-            .and_then(|m| m.as_array())
-            .context("Failed to get workspace members")?;
+    let mut package_name = None;
+    let mut output_path = None;
+    let mut i = 2;
 
-        if args.len() > 2 {
-            let package_name = &args[2];
-            if members.iter().any(|m| m.as_str() == Some(package_name)) {
-                Ok((package_name.clone(), current_dir.join(package_name)))
-            } else {
-                Err(anyhow::anyhow!(
-                    "Package '{}' not found in workspace",
-                    package_name
-                ))
+    while i < args.len() {
+        match args[i].as_str() {
+            "--output" => {
+                i += 1;
+                if i < args.len() {
+                    output_path = Some(PathBuf::from(&args[i]));
+                } else {
+                    eprintln!("Error: --output option requires a path");
+                    std::process::exit(1);
+                }
             }
-        } else {
+            _ => {
+                if package_name.is_none() {
+                    package_name = Some(args[i].clone());
+                } else {
+                    eprintln!("Error: Unexpected argument '{}'", args[i]);
+                    std::process::exit(1);
+                }
+            }
+        }
+        i += 1;
+    }
+
+    Ok(Args {
+        package_name,
+        output_path,
+    })
+}
+
+fn determine_package(
+    current_dir: &Path,
+    package_name: &Option<String>,
+) -> Result<(String, PathBuf)> {
+    if let Some(name) = package_name {
+        Ok((name.clone(), current_dir.join(name)))
+    } else {
+        let cargo_toml = current_dir.join("Cargo.toml");
+        let content = fs::read_to_string(cargo_toml)?;
+        let parsed_toml: toml::Value = toml::from_str(&content)?;
+
+        if let Some(workspace) = parsed_toml.get("workspace") {
+            let members = workspace
+                .get("members")
+                .and_then(|m| m.as_array())
+                .context("Failed to get workspace members")?;
+
             println!("This is a workspace. Available packages:");
             for (i, member) in members.iter().enumerate() {
                 println!("{}. {}", i + 1, member.as_str().unwrap());
             }
+
             println!("Please run the command again with the package name.");
-            process::exit(1);
+            std::process::exit(1);
         }
-    } else {
-        // Single package project
+
         parsed_toml
             .get("package")
             .and_then(|p| p.get("name"))
@@ -100,12 +138,10 @@ fn find_src_dir(package_path: &Path) -> Result<PathBuf> {
         .context("Failed to find src directory")
 }
 
-fn create_output_file(current_dir: &Path, package_name: &str) -> Result<PathBuf> {
-    let output_file = current_dir
+fn create_output_file(current_dir: &Path, package_name: &str) -> PathBuf {
+    current_dir
         .join("target")
-        .join(format!("{}_merged.rs", package_name));
-    fs::create_dir_all(output_file.parent().unwrap())?;
-    Ok(output_file)
+        .join(format!("{}_merged.rs", package_name))
 }
 
 fn parse_module_structure(src_dir: &Path) -> Result<HashMap<String, ModuleInfo>> {

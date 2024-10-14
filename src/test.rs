@@ -19,8 +19,7 @@ version = "0.1.0"
             .write_all(cargo_toml_content.as_bytes())
             .unwrap();
 
-        let args = vec!["cargo".to_string(), "rustmerge".to_string()];
-        let (result, _) = determine_package(&temp_dir.path().to_path_buf(), &args).unwrap();
+        let (result, _) = determine_package(&temp_dir.path().to_path_buf(), &None).unwrap();
         assert_eq!(result, "test_package");
 
         let args_with_name = vec![
@@ -28,8 +27,11 @@ version = "0.1.0"
             "rustmerge".to_string(),
             "custom_name".to_string(),
         ];
-        let (result_with_name, _) =
-            determine_package(&temp_dir.path().to_path_buf(), &args_with_name).unwrap();
+        let (result_with_name, _) = determine_package(
+            &temp_dir.path().to_path_buf(),
+            &Some(args_with_name[2].clone()),
+        )
+        .unwrap();
         assert_eq!(result_with_name, "custom_name");
     }
 
