@@ -14,10 +14,12 @@ use quote::{quote, ToTokens};
 use syn::File;
 use syn::{Item, ItemMod};
 
+#[derive(Debug)]
 struct ModuleInfo {
     content: TokenStream,
 }
 
+#[derive(Debug)]
 struct Args {
     package_name: Option<String>,
     output_path: Option<PathBuf>,
@@ -226,12 +228,14 @@ fn parse_module_items(
     module_path: &str,
     module_structure: &mut HashMap<String, ModuleInfo>,
 ) -> Result<()> {
+    let mut module_items = Vec::new();
+
     for item in items {
         if let Item::Mod(item_mod) = item {
             if !is_test_module(item) {
-                let submodule_name = item_mod.ident.to_string();
+                let submodule_name = item_mod.ident.clone();
                 let submodule_path = if module_path == "crate" {
-                    submodule_name.clone()
+                    submodule_name.to_string()
                 } else {
                     format!("{}::{}", module_path, submodule_name)
                 };
@@ -246,21 +250,20 @@ fn parse_module_items(
                 if let Some((_, items)) = &item_mod.content {
                     let submodule_tokens = quote::quote! {
                         #(#cfg_attrs)*
-                        #item_mod
+                        pub mod #submodule_name {
+                            #(#items)*
+                        }
                     };
-                    module_structure.insert(
-                        submodule_path.clone(),
-                        ModuleInfo {
-                            content: submodule_tokens,
-                        },
-                    );
+                    module_items.push(submodule_tokens);
                     parse_module_items(items, file_path, &submodule_path, module_structure)?;
                 } else {
                     let parent = file_path
                         .parent()
                         .context("Failed to get parent directory")?;
-                    let file_module_path = parent.join(&submodule_name).with_extension("rs");
-                    let dir_module_path = parent.join(&submodule_name).join("mod.rs");
+                    let file_module_path = parent
+                        .join(&submodule_name.to_string())
+                        .with_extension("rs");
+                    let dir_module_path = parent.join(&submodule_name.to_string()).join("mod.rs");
 
                     if file_module_path.exists() {
                         parse_file_and_submodules(
@@ -279,13 +282,29 @@ fn parse_module_items(
                             #(#cfg_attrs)*
                             pub mod #submodule_name {}
                         };
-                        module_structure
-                            .insert(submodule_path.clone(), ModuleInfo { content: empty_mod });
+                        module_items.push(empty_mod);
                     }
                 }
             }
+        } else {
+            let submodule_tokens = quote::quote! {
+                #item
+            };
+            module_items.push(submodule_tokens);
         }
     }
+
+    let module_tokens = quote::quote! {
+        #(#module_items)*
+    };
+
+    module_structure.insert(
+        module_path.to_string(),
+        ModuleInfo {
+            content: module_tokens,
+        },
+    );
+
     Ok(())
 }
 
