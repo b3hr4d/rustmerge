@@ -141,6 +141,7 @@ fn find_src_dir(package_path: &Path) -> Result<PathBuf> {
 fn create_output_file(current_dir: &Path, package_name: &str) -> PathBuf {
     current_dir
         .join("target")
+        .join("rustmerge")
         .join(format!("{}_merged.rs", package_name))
 }
 
