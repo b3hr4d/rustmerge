@@ -37,6 +37,12 @@ If there's only one package in the workspace, you can omit the package name.
 
 The merged Rust file will be created in the `target` directory of your current working directory, named `<package_name>_merged.rs`.
 
+### Custom output path:
+
+```
+cargo rustmerge [<package_name>] --output path/to/output.rs
+```
+
 ## Examples
 
 1. Merge a single-package project:
