@@ -1,5 +1,6 @@
 mod test;
 
+use regex::Regex;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -268,26 +269,32 @@ fn parse_file_and_submodules(
                         parse_module_items(items, file_path, &submodule_path, module_structure)?;
                     } else {
                         // External module file
-                        let submodule_file =
-                            file_path.with_file_name(format!("{}.rs", submodule_name));
-                        if submodule_file.exists() {
-                            parse_file_and_submodules(
-                                &submodule_file,
-                                &submodule_path,
-                                module_structure,
-                            )?;
-                        } else {
-                            let submodule_dir =
-                                file_path.with_file_name(submodule_name.to_string());
-                            let mod_file = submodule_dir.join("mod.rs");
-                            if mod_file.exists() {
-                                parse_file_and_submodules(
-                                    &mod_file,
-                                    &submodule_path,
-                                    module_structure,
-                                )?;
-                            }
-                        }
+                        let parent = file_path
+                            .parent()
+                            .context("Failed to get parent directory")?;
+                        let parent_mod_name = submodule_path.split("::").next().unwrap();
+
+                        let possible_module_files = [
+                            parent.join(format!("{}.rs", submodule_name)),
+                            parent.join(submodule_name.to_string()).join("mod.rs"),
+                            parent
+                                .join(parent_mod_name)
+                                .join(format!("{}.rs", submodule_name)),
+                        ];
+
+                        let submodule_file = possible_module_files
+                            .iter()
+                            .find(|p| p.exists())
+                            .cloned()
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("Failed to find module file for {}", submodule_name)
+                            })?;
+
+                        parse_file_and_submodules(
+                            &submodule_file,
+                            &submodule_path,
+                            module_structure,
+                        )?;
 
                         // Add the parsed submodule content
                         if let Some(submodule_info) = module_structure.get(&submodule_path) {
@@ -451,6 +458,10 @@ fn process_module(
 }
 
 fn format_rust_code(code: &str) -> Result<String> {
+    // Remove #[rustfmt::skip] attributes
+    let re = Regex::new(r"#\s*\[\s*rustfmt\s*::\s*skip\s*\]").unwrap();
+    let code_without_skip = re.replace_all(code, "").to_string();
+
     let mut rustfmt = Command::new("rustfmt")
         .arg("--edition=2021")
         .stdin(Stdio::piped())
@@ -461,7 +472,7 @@ fn format_rust_code(code: &str) -> Result<String> {
     {
         let stdin = rustfmt.stdin.as_mut().expect("Failed to open stdin");
         stdin
-            .write_all(code.as_bytes())
+            .write_all(code_without_skip.as_bytes())
             .context("Failed to write to rustfmt stdin")?;
     }
 
