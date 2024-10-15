@@ -4,6 +4,7 @@ mod tests {
     use std::fs::File;
     use std::io::Write;
     use std::path::PathBuf;
+    use syn::{parse_quote, Item};
     use tempfile::TempDir;
 
     fn setup_temp_cargo_toml(package_name: &str) -> (TempDir, PathBuf) {
@@ -219,9 +220,9 @@ edition = "2021"
             r#"
             const MY_CONSTANT: i32 = 42;
 
+            #[cfg(not(test))]
             mod mother_mod {{
                 fn mother_function() -> i32 {{ 10 }} 
-
                 pub mod nested_mod {{
                     fn nested_function() -> i32 {{ 20 }}
                 }}
@@ -386,5 +387,54 @@ pub fn nested_function() -> i32 {
         println!("{}", formatted_code);
 
         Ok(())
+    }
+
+    #[test]
+    fn test_parse_file_and_submodules() {
+        let file_content = r#"
+            #[cfg(feature = "canbench")]
+            mod bench_mod {
+                pub fn bench_function() {}
+            }
+
+            mod normal_mod {
+                pub fn normal_function() {}
+            }
+        "#;
+
+        let file_path = Path::new("test.rs");
+        fs::write(file_path, file_content).unwrap();
+
+        let mut module_structure = HashMap::new();
+        parse_file_and_submodules(file_path, "crate", &mut module_structure).unwrap();
+
+        assert!(module_structure.contains_key("crate::bench_mod"));
+        assert!(module_structure.contains_key("crate::normal_mod"));
+
+        fs::remove_file(file_path).unwrap();
+    }
+
+    #[test]
+    fn test_parse_module_items() {
+        let items: Vec<Item> = vec![
+            parse_quote! {
+                #[cfg(feature = "canbench")]
+                mod bench_mod {
+                    pub fn bench_function() {}
+                }
+            },
+            parse_quote! {
+                mod normal_mod {
+                    pub fn normal_function() {}
+                }
+            },
+        ];
+
+        let file_path = Path::new("test.rs");
+        let mut module_structure = HashMap::new();
+        parse_module_items(&items, file_path, "crate", &mut module_structure).unwrap();
+
+        assert!(module_structure.contains_key("crate::bench_mod"));
+        assert!(module_structure.contains_key("crate::normal_mod"));
     }
 }

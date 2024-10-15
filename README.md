@@ -1,15 +1,18 @@
 # rustmerge
 
-`rustmerge` is a Cargo subcommand that merges all Rust source files in a package into a single file. It works with both workspace projects and single-package projects.
+`rustmerge` is a Cargo subcommand that merges all Rust source files in a package or workspace into single files. It works with both workspace projects and single-package projects.
 
-Its primary use case is to simplify the process of sharing a Rust project with AI tools, e.g., for training machine learning models. By merging all source files into a single file, you can easily share the project with tools that require a single file as input.
+Its primary use case is to simplify the process of sharing Rust projects with AI tools, e.g., for training machine learning models or code analysis. By merging all source files into a single file per package, you can easily share the project with tools that require a single file as input.
 
 ## Features
 
 - Merges all `.rs` files in a package into a single file
 - Works with both workspace and single-package projects
+- Can process all packages in a workspace at once
 - Excludes test modules from the merged output
 - Maintains the module structure of the original project
+- Preserves `cfg` attributes on modules
+- Custom output path for merged files
 
 ## Installation
 
@@ -27,21 +30,27 @@ cargo install rustmerge
 cargo rustmerge
 ```
 
-### In a workspace:
+### In a workspace (specific package):
 
 ```
-cargo rustmerge [package_name]
+cargo rustmerge <package_name>
 ```
 
-If there's only one package in the workspace, you can omit the package name.
+### Process all packages in a workspace:
 
-The merged Rust file will be created in the `target` directory of your current working directory, named `rustmerge/<package_name>_merged.rs`.
+```
+cargo rustmerge --all
+```
 
 ### Custom output path:
 
 ```
-cargo rustmerge [<package_name>] --output path/to/output.rs
+cargo rustmerge [<package_name>] --output <path>
 ```
+
+If there's only one package in the workspace and you're not using `--all`, you can omit the package name.
+
+By default, the merged Rust file(s) will be created in the `target` directory of your current working directory, named `rustmerge/<package_name>_merged.rs`.
 
 ## Examples
 
@@ -53,10 +62,38 @@ cargo rustmerge [<package_name>] --output path/to/output.rs
    ```
 
 2. Merge a specific package in a workspace:
+
    ```
    cd my-rust-workspace
    cargo rustmerge my-package
    ```
+
+3. Merge all packages in a workspace:
+
+   ```
+   cd my-rust-workspace
+   cargo rustmerge --all
+   ```
+
+4. Merge with a custom output path:
+
+   ```
+   cargo rustmerge --output /path/to/output/merged_project.rs
+   ```
+
+5. Merge all packages with a custom output directory:
+   ```
+   cargo rustmerge --all --output /path/to/output/dir
+   ```
+
+## Output
+
+The tool will print information about the merged files, including their locations and sizes. For example:
+
+```
+Merged and formatted Rust program for package 'my-package' created in "/path/to/project/target/rustmerge/my-package_merged.rs"
+File size: 12345 bytes
+```
 
 ## Contributing
 
