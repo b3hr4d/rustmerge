@@ -99,11 +99,12 @@ fn process_all_packages(workspace_root: &Path, args: &Args) -> Result<()> {
 
         for member in members {
             let output_path = if args.output_path.is_some() {
+                let member_to_name = member.as_str().unwrap().replace("/", "_");
                 Some(
                     args.output_path
                         .as_ref()
                         .unwrap()
-                        .join(member.as_str().unwrap())
+                        .join(member_to_name)
                         .with_extension("rs"),
                 )
             } else {
@@ -112,7 +113,7 @@ fn process_all_packages(workspace_root: &Path, args: &Args) -> Result<()> {
 
             let args_with_output = Args {
                 output_path,
-                process_all: args.process_all,
+                process_all: false,
                 package_name: None,
             };
             let package_name = member.as_str().unwrap();

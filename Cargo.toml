@@ -1,6 +1,6 @@
 [package]
 name = "rustmerge"
-version = "0.1.3"
+version = "0.1.4"
 authors = ["b3hr4d <b3hr4d@live.com>"]
 edition = "2021"
 description = "A Cargo subcommand that merges all Rust source files in a package into a single file."
