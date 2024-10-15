@@ -205,7 +205,8 @@ fn create_output_file(current_dir: &Path, package_name: &str) -> PathBuf {
     current_dir
         .join("target")
         .join("rustmerge")
-        .join(format!("{}_merged.rs", package_name))
+        .join(package_name)
+        .with_extension("rs")
 }
 
 fn parse_module_structure(src_dir: &Path) -> Result<HashMap<String, ModuleInfo>> {

@@ -50,7 +50,7 @@ cargo rustmerge [<package_name>] --output <path>
 
 If there's only one package in the workspace and you're not using `--all`, you can omit the package name.
 
-By default, the merged Rust file(s) will be created in the `target` directory of your current working directory, named `rustmerge/<package_name>_merged.rs`.
+By default, the merged Rust file(s) will be created in the `target` directory of your current working directory, named `rustmerge/<package_name>.rs`.
 
 ## Examples
 
@@ -91,7 +91,7 @@ By default, the merged Rust file(s) will be created in the `target` directory of
 The tool will print information about the merged files, including their locations and sizes. For example:
 
 ```
-Merged and formatted Rust program for package 'my-package' created in "/path/to/project/target/rustmerge/my-package_merged.rs"
+Merged and formatted Rust program for package 'my-package' created in "/path/to/project/target/rustmerge/my-package.rs"
 File size: 12345 bytes
 ```
 
