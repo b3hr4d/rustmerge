@@ -275,11 +275,11 @@ fn parse_file_and_submodules(
                         let parent_mod_name = submodule_path.split("::").next().unwrap();
 
                         let possible_module_files = [
-                            parent.join(format!("{}.rs", submodule_name)),
                             parent.join(submodule_name.to_string()).join("mod.rs"),
                             parent
                                 .join(parent_mod_name)
                                 .join(format!("{}.rs", submodule_name)),
+                            parent.join(format!("{}.rs", submodule_name)),
                         ];
 
                         let submodule_file = possible_module_files
