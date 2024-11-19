@@ -406,10 +406,10 @@ pub fn nested_function() -> i32 {
         fs::write(file_path, file_content).unwrap();
 
         let mut module_structure = HashMap::new();
-        parse_file_and_submodules(file_path, "crate", &mut module_structure).unwrap();
+        parse_file_and_submodules(file_path, "mod", &mut module_structure).unwrap();
 
-        assert!(module_structure.contains_key("crate::bench_mod"));
-        assert!(module_structure.contains_key("crate::normal_mod"));
+        assert!(module_structure.contains_key("mod::bench_mod"));
+        assert!(module_structure.contains_key("mod::normal_mod"));
 
         fs::remove_file(file_path).unwrap();
     }

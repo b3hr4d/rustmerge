@@ -132,10 +132,10 @@ fn process_all_packages(workspace_root: &Path, args: &Args) -> Result<()> {
 
 fn process_single_package(package_name: &str, package_path: &Path, args: &Args) -> Result<()> {
     let src_dir = find_src_dir(package_path)?;
-    let output_file = args
-        .output_path
-        .clone()
-        .unwrap_or_else(|| create_output_file(package_path, package_name));
+    let output_file = args.output_path.clone().unwrap_or_else(|| {
+        let output_path = env::current_dir().unwrap().join("target").join("rustmerge");
+        create_output_file(&output_path, package_name)
+    });
 
     let module_structure = parse_module_structure(&src_dir)?;
     let merged_content = process_package(&src_dir, &module_structure)?;
@@ -202,12 +202,8 @@ fn find_src_dir(package_path: &Path) -> Result<PathBuf> {
         .context("Failed to find src directory")
 }
 
-fn create_output_file(current_dir: &Path, package_name: &str) -> PathBuf {
-    current_dir
-        .join("target")
-        .join("rustmerge")
-        .join(package_name)
-        .with_extension("rs")
+fn create_output_file(output_dir: &Path, package_name: &str) -> PathBuf {
+    output_dir.join(package_name).with_extension("rs")
 }
 
 fn parse_module_structure(src_dir: &Path) -> Result<HashMap<String, ModuleInfo>> {
