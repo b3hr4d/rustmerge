@@ -19,6 +19,8 @@ use syn::{Item, ItemMod};
 #[derive(Debug)]
 struct ModuleInfo {
     content: TokenStream,
+    file_path: PathBuf,       // Absolute path to track module origin
+    rel_path: Option<String>, // Relative path from src directory
 }
 #[derive(Debug)]
 struct Args {
@@ -219,7 +221,7 @@ fn parse_module_structure(src_dir: &Path) -> Result<HashMap<String, ModuleInfo>>
         ));
     };
 
-    parse_file_and_submodules(&root_file_path, "crate", &mut module_structure)?;
+    parse_file_and_submodules(&root_file_path, "crate", &mut module_structure, src_dir)?;
 
     Ok(module_structure)
 }
@@ -228,6 +230,7 @@ fn parse_file_and_submodules(
     file_path: &Path,
     module_path: &str,
     module_structure: &mut HashMap<String, ModuleInfo>,
+    src_dir: &Path,
 ) -> Result<()> {
     let content = fs::read_to_string(file_path)?;
     let file: File = syn::parse_file(&content)?;
@@ -262,7 +265,13 @@ fn parse_file_and_submodules(
                         expanded.to_tokens(&mut module_content);
 
                         // Recursively parse nested inline modules
-                        parse_module_items(items, file_path, &submodule_path, module_structure)?;
+                        parse_module_items(
+                            items,
+                            file_path,
+                            &submodule_path,
+                            module_structure,
+                            src_dir,
+                        )?;
                     } else {
                         // External module file
                         let parent = file_path
@@ -290,6 +299,7 @@ fn parse_file_and_submodules(
                             &submodule_file,
                             &submodule_path,
                             module_structure,
+                            src_dir,
                         )?;
 
                         // Add the parsed submodule content
@@ -310,10 +320,18 @@ fn parse_file_and_submodules(
         }
     }
 
+    // Calculate relative path from src directory
+    let rel_path = file_path
+        .strip_prefix(src_dir)
+        .map(|p| p.to_string_lossy().to_string())
+        .ok();
+
     module_structure.insert(
         module_path.to_string(),
         ModuleInfo {
             content: module_content,
+            file_path: file_path.to_path_buf(),
+            rel_path,
         },
     );
 
@@ -325,6 +343,7 @@ fn parse_module_items(
     file_path: &Path,
     module_path: &str,
     module_structure: &mut HashMap<String, ModuleInfo>,
+    src_dir: &Path,
 ) -> Result<()> {
     let mut module_content = TokenStream::new();
 
@@ -356,6 +375,7 @@ fn parse_module_items(
                             file_path,
                             &submodule_path,
                             module_structure,
+                            src_dir,
                         )?;
                     }
                 }
@@ -364,10 +384,18 @@ fn parse_module_items(
         }
     }
 
+    // Calculate relative path from src directory
+    let rel_path = file_path
+        .strip_prefix(src_dir)
+        .map(|p| p.to_string_lossy().to_string())
+        .ok();
+
     module_structure.insert(
         module_path.to_string(),
         ModuleInfo {
             content: module_content,
+            file_path: file_path.to_path_buf(),
+            rel_path,
         },
     );
 
@@ -418,6 +446,23 @@ fn process_module(
     if let Some(module_info) = module_structure.get(module_path) {
         let file = syn::parse_file(&module_info.content.to_string())?;
 
+        // Get relative file path for comment for the root module
+        let file_path_str = module_info.rel_path.as_deref().unwrap_or_else(|| {
+            module_info
+                .file_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("unknown.rs")
+        });
+
+        // Add root module file comment - encode filename to avoid issues with special characters
+        let marker = format!("RUSTMERGE_COMMENT_{}", encode_filename(file_path_str));
+        let marker_lit = proc_macro2::Literal::string(&marker);
+        let comment_tokens = quote! {
+            const _: &'static str = #marker_lit;
+        };
+        comment_tokens.to_tokens(output);
+
         for item in file.items {
             if !is_test_module(&item) {
                 match item {
@@ -429,7 +474,39 @@ fn process_module(
                         };
 
                         let mut submodule_content = TokenStream::new();
-                        process_module(&submodule_path, module_structure, &mut submodule_content)?;
+
+                        // Find the actual file path for this module
+                        if let Some(submodule_info) = module_structure.get(&submodule_path) {
+                            // Get this module's file path
+                            let sub_path_str =
+                                submodule_info.rel_path.as_deref().unwrap_or_else(|| {
+                                    submodule_info
+                                        .file_path
+                                        .file_name()
+                                        .and_then(|name| name.to_str())
+                                        .unwrap_or("unknown.rs")
+                                });
+
+                            // Only add comment if the module is in a different file than its parent
+                            if sub_path_str != file_path_str {
+                                let sub_marker =
+                                    format!("RUSTMERGE_COMMENT_{}", encode_filename(sub_path_str));
+                                let sub_marker_lit = proc_macro2::Literal::string(&sub_marker);
+
+                                let sub_comment_tokens = quote! {
+                                    const _: &'static str = #sub_marker_lit;
+                                };
+                                sub_comment_tokens.to_tokens(&mut submodule_content);
+                            }
+
+                            // Process the content of the module
+                            process_module_content(
+                                &submodule_path,
+                                module_structure,
+                                &mut submodule_content,
+                                sub_path_str, // Pass the current module's file path
+                            )?;
+                        }
 
                         let expanded = if submodule_content.is_empty() && content.is_none() {
                             quote! {
@@ -453,11 +530,102 @@ fn process_module(
     Ok(())
 }
 
-fn format_rust_code(code: &str) -> Result<String> {
-    // Remove #[rustfmt::skip] attributes
-    let re = Regex::new(r"#\s*\[\s*rustfmt\s*::\s*skip\s*\]").unwrap();
-    let code_without_skip = re.replace_all(code, "").to_string();
+// Process module content with tracking of parent file path
+fn process_module_content(
+    module_path: &str,
+    module_structure: &HashMap<String, ModuleInfo>,
+    output: &mut TokenStream,
+    parent_file_path: &str, // Track parent file path to avoid duplicate comments
+) -> Result<()> {
+    if let Some(module_info) = module_structure.get(module_path) {
+        let file = syn::parse_file(&module_info.content.to_string())?;
 
+        for item in file.items {
+            if !is_test_module(&item) {
+                match item {
+                    Item::Mod(ItemMod { ident, content, .. }) => {
+                        let submodule_path = if module_path == "crate" {
+                            ident.to_string()
+                        } else {
+                            format!("{}::{}", module_path, ident)
+                        };
+
+                        let mut submodule_content = TokenStream::new();
+
+                        // Add file comment if this module is in a different file
+                        if let Some(submodule_info) = module_structure.get(&submodule_path) {
+                            let sub_path_str =
+                                submodule_info.rel_path.as_deref().unwrap_or_else(|| {
+                                    submodule_info
+                                        .file_path
+                                        .file_name()
+                                        .and_then(|name| name.to_str())
+                                        .unwrap_or("unknown.rs")
+                                });
+
+                            // Only add comment if module is in a different file than its parent
+                            if sub_path_str != parent_file_path {
+                                let sub_marker =
+                                    format!("RUSTMERGE_COMMENT_{}", encode_filename(sub_path_str));
+                                let sub_marker_lit = proc_macro2::Literal::string(&sub_marker);
+
+                                let sub_comment_tokens = quote! {
+                                    const _: &'static str = #sub_marker_lit;
+                                };
+                                sub_comment_tokens.to_tokens(&mut submodule_content);
+                            }
+
+                            // Process this module's content
+                            process_module_content(
+                                &submodule_path,
+                                module_structure,
+                                &mut submodule_content,
+                                sub_path_str, // Pass this module's file path
+                            )?;
+                        }
+
+                        let expanded = if submodule_content.is_empty() && content.is_none() {
+                            quote! {
+                                pub mod #ident;
+                            }
+                        } else {
+                            quote! {
+                                pub mod #ident {
+                                    #submodule_content
+                                }
+                            }
+                        };
+                        expanded.to_tokens(output);
+                    }
+                    _ => item.to_tokens(output),
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// Helper function to safely encode filenames for our markers
+fn encode_filename(filename: &str) -> String {
+    // Use base64 encoding to safely handle any special characters
+    use std::fmt::Write;
+
+    let mut encoded = String::new();
+    for byte in filename.bytes() {
+        match byte {
+            b'.' => write!(encoded, "__DOT__").unwrap(),
+            b'_' => write!(encoded, "__UNDERSCORE__").unwrap(),
+            b'/' => write!(encoded, "__SLASH__").unwrap(),
+            b'-' => write!(encoded, "__DASH__").unwrap(),
+            _ => encoded.push(byte as char),
+        }
+    }
+    encoded
+}
+
+fn format_rust_code(code: &str) -> Result<String> {
+    // Run rustfmt first to get well-formatted code
     let mut rustfmt = Command::new("rustfmt")
         .arg("--edition=2021")
         .stdin(Stdio::piped())
@@ -468,7 +636,7 @@ fn format_rust_code(code: &str) -> Result<String> {
     {
         let stdin = rustfmt.stdin.as_mut().expect("Failed to open stdin");
         stdin
-            .write_all(code_without_skip.as_bytes())
+            .write_all(code.as_bytes())
             .context("Failed to write to rustfmt stdin")?;
     }
 
@@ -476,12 +644,34 @@ fn format_rust_code(code: &str) -> Result<String> {
         .wait_with_output()
         .context("Failed to read rustfmt output")?;
 
-    if output.status.success() {
-        Ok(String::from_utf8(output.stdout).context("rustfmt output was not valid UTF-8")?)
-    } else {
-        Err(anyhow::anyhow!(
+    if !output.status.success() {
+        return Err(anyhow::anyhow!(
             "rustfmt failed: {:?}",
             String::from_utf8_lossy(&output.stderr)
-        ))
+        ));
     }
+
+    let formatted =
+        String::from_utf8(output.stdout).context("rustfmt output was not valid UTF-8")?;
+
+    // Now replace our markers with actual comments
+    let pattern = r#"const\s+_\s*:\s*&\s*'static\s*str\s*=\s*"RUSTMERGE_COMMENT_([^"]+)"\s*;"#;
+    let re = Regex::new(pattern).unwrap();
+    let result = re.replace_all(&formatted, |caps: &regex::Captures| {
+        let encoded_filename = &caps[1];
+        let filename = decode_filename(encoded_filename);
+        format!("// {}", filename)
+    });
+
+    Ok(result.to_string())
+}
+
+// Helper function to decode our specially encoded filenames
+fn decode_filename(encoded: &str) -> String {
+    let mut result = encoded.to_string();
+    result = result.replace("__DOT__", ".");
+    result = result.replace("__UNDERSCORE__", "_");
+    result = result.replace("__SLASH__", "/");
+    result = result.replace("__DASH__", "-");
+    result
 }
