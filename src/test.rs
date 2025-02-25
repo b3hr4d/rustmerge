@@ -378,7 +378,13 @@ pub fn nested_function() -> i32 {
         )?;
 
         let mut module_structure = HashMap::new();
-        parse_file_and_submodules(&src_dir.join("main.rs"), "crate", &mut module_structure)?;
+
+        parse_file_and_submodules(
+            &src_dir.join("main.rs"),
+            "crate",
+            &mut module_structure,
+            Path::new("src/main.rs"),
+        )?;
 
         let processed = process_package(&src_dir, &module_structure)?;
 
@@ -406,7 +412,13 @@ pub fn nested_function() -> i32 {
         fs::write(file_path, file_content).unwrap();
 
         let mut module_structure = HashMap::new();
-        parse_file_and_submodules(file_path, "mod", &mut module_structure).unwrap();
+        parse_file_and_submodules(
+            file_path,
+            "mod",
+            &mut module_structure,
+            Path::new("test.rs"),
+        )
+        .unwrap();
 
         assert!(module_structure.contains_key("mod::bench_mod"));
         assert!(module_structure.contains_key("mod::normal_mod"));
@@ -432,7 +444,14 @@ pub fn nested_function() -> i32 {
 
         let file_path = Path::new("test.rs");
         let mut module_structure = HashMap::new();
-        parse_module_items(&items, file_path, "crate", &mut module_structure).unwrap();
+        parse_module_items(
+            &items,
+            file_path,
+            "crate",
+            &mut module_structure,
+            Path::new("src"),
+        )
+        .unwrap();
 
         assert!(module_structure.contains_key("crate::bench_mod"));
         assert!(module_structure.contains_key("crate::normal_mod"));
