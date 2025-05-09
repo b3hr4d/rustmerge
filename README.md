@@ -9,7 +9,7 @@ Its primary use case is to simplify the process of sharing Rust projects with AI
 - Merges all `.rs` files in a package into a single file
 - Works with both workspace and single-package projects
 - Can process all packages in a workspace at once
-- Excludes test modules from the merged output
+- Excludes test modules (modules named `test` or `tests`) and any items (functions, structs, other modules, etc.) annotated with `#[cfg(test)]` from the merged output.
 - Maintains the module structure of the original project
 - Preserves `cfg` attributes on modules
 - Custom output path for merged files
