@@ -456,4 +456,210 @@ pub fn nested_function() -> i32 {
         assert!(module_structure.contains_key("crate::bench_mod"));
         assert!(module_structure.contains_key("crate::normal_mod"));
     }
+
+    #[test]
+    fn test_ignore_cfg_test_module() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let src_dir = temp_dir.path().join("src");
+        fs::create_dir_all(&src_dir)?;
+
+        let lib_rs_path = src_dir.join("lib.rs");
+        fs::write(
+            lib_rs_path,
+            r#"
+            pub mod keep_this_module {
+                pub fn keep_fn() {}
+            }
+
+            #[cfg(test)]
+            mod ignore_this_module {
+                fn test_fn() {}
+            }
+            "#,
+        )?;
+
+        let module_structure = parse_module_structure(&src_dir)?;
+        assert!(module_structure.contains_key("crate"));
+        assert!(module_structure.contains_key("keep_this_module"));
+        assert!(!module_structure.contains_key("ignore_this_module")); // Key check
+
+        let processed_code = process_package(&src_dir, &module_structure)?.to_string();
+        let formatted_code = format_rust_code(&processed_code)?;
+
+        assert!(formatted_code.contains("keep_this_module"));
+        assert!(formatted_code.contains("keep_fn"));
+        assert!(!formatted_code.contains("ignore_this_module"));
+        assert!(!formatted_code.contains("test_fn"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_ignore_cfg_test_function() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let src_dir = temp_dir.path().join("src");
+        fs::create_dir_all(&src_dir)?;
+
+        let lib_rs_path = src_dir.join("lib.rs");
+        fs::write(
+            lib_rs_path,
+            r#"
+            pub fn keep_this_fn() {}
+
+            #[cfg(test)]
+            fn ignore_this_fn() {}
+
+            mod my_module {
+                pub fn keep_this_module_fn() {}
+
+                #[cfg(test)]
+                fn ignore_this_module_fn() {}
+            }
+            "#,
+        )?;
+
+        let module_structure = parse_module_structure(&src_dir)?;
+        let processed_code = process_package(&src_dir, &module_structure)?.to_string();
+        let formatted_code = format_rust_code(&processed_code)?;
+
+        assert!(formatted_code.contains("keep_this_fn"));
+        assert!(!formatted_code.contains("ignore_this_fn"));
+        assert!(formatted_code.contains("my_module"));
+        assert!(formatted_code.contains("keep_this_module_fn"));
+        assert!(!formatted_code.contains("ignore_this_module_fn"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_ignore_cfg_test_item_in_module() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let src_dir = temp_dir.path().join("src");
+        fs::create_dir_all(&src_dir)?;
+
+        let lib_rs_path = src_dir.join("lib.rs");
+        fs::write(
+            lib_rs_path,
+            r#"
+            pub mod outer_module {
+                pub struct KeepStruct;
+
+                #[cfg(test)]
+                struct IgnoreStruct;
+
+                pub fn keep_fn_in_outer() {}
+            }
+            "#,
+        )?;
+
+        let module_structure = parse_module_structure(&src_dir)?;
+        assert!(module_structure.contains_key("crate"));
+        assert!(module_structure.contains_key("outer_module"));
+
+        let processed_code = process_package(&src_dir, &module_structure)?.to_string();
+        let formatted_code = format_rust_code(&processed_code)?;
+
+        assert!(formatted_code.contains("outer_module"));
+        assert!(formatted_code.contains("KeepStruct"));
+        assert!(formatted_code.contains("keep_fn_in_outer"));
+        assert!(!formatted_code.contains("IgnoreStruct"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_process_items_not_cfg_test() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let src_dir = temp_dir.path().join("src");
+        fs::create_dir_all(&src_dir)?;
+
+        let lib_rs_path = src_dir.join("lib.rs");
+        fs::write(
+            lib_rs_path,
+            r#"
+            pub struct MyStruct;
+            pub enum MyEnum { Variant1, Variant2 }
+            pub fn my_function() {}
+            pub mod my_module {
+                pub const MY_CONST: i32 = 1;
+            }
+            "#,
+        )?;
+
+        let module_structure = parse_module_structure(&src_dir)?;
+        let processed_code = process_package(&src_dir, &module_structure)?.to_string();
+        let formatted_code = format_rust_code(&processed_code)?;
+
+        assert!(formatted_code.contains("MyStruct"));
+        assert!(formatted_code.contains("MyEnum"));
+        assert!(formatted_code.contains("my_function"));
+        assert!(formatted_code.contains("my_module"));
+        assert!(formatted_code.contains("MY_CONST"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_ignore_test_module_name() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let src_dir = temp_dir.path().join("src");
+        fs::create_dir_all(&src_dir)?;
+
+        let lib_rs_path = src_dir.join("lib.rs");
+        fs::write(
+            lib_rs_path,
+            r#"
+            pub mod keep_this_too {
+                pub fn another_kept_fn() {}
+            }
+            mod test { // Should be ignored by name
+                fn this_is_a_test_fn() {}
+            }
+            "#,
+        )?;
+
+        let module_structure = parse_module_structure(&src_dir)?;
+        assert!(module_structure.contains_key("crate"));
+        assert!(module_structure.contains_key("keep_this_too"));
+        assert!(!module_structure.contains_key("test"));
+
+        let processed_code = process_package(&src_dir, &module_structure)?.to_string();
+        let formatted_code = format_rust_code(&processed_code)?;
+
+        assert!(formatted_code.contains("keep_this_too"));
+        assert!(formatted_code.contains("another_kept_fn"));
+        assert!(!formatted_code.contains("this_is_a_test_fn"));
+        assert!(!formatted_code.contains("mod test"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_ignore_tests_module_name() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let src_dir = temp_dir.path().join("src");
+        fs::create_dir_all(&src_dir)?;
+
+        let lib_rs_path = src_dir.join("lib.rs");
+        fs::write(
+            lib_rs_path,
+            r#"
+            pub mod keeper_module {
+                pub fn some_public_fn() {}
+            }
+            mod tests { // Should be ignored by name
+                fn this_is_another_test_fn() {}
+            }
+            "#,
+        )?;
+
+        let module_structure = parse_module_structure(&src_dir)?;
+        assert!(module_structure.contains_key("crate"));
+        assert!(module_structure.contains_key("keeper_module"));
+        assert!(!module_structure.contains_key("tests"));
+
+        let processed_code = process_package(&src_dir, &module_structure)?.to_string();
+        let formatted_code = format_rust_code(&processed_code)?;
+
+        assert!(formatted_code.contains("keeper_module"));
+        assert!(formatted_code.contains("some_public_fn"));
+        assert!(!formatted_code.contains("this_is_another_test_fn"));
+        assert!(!formatted_code.contains("mod tests"));
+        Ok(())
+    }
 }

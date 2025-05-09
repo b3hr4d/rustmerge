@@ -238,7 +238,7 @@ fn parse_file_and_submodules(
     let mut module_content = TokenStream::new();
 
     for item in &file.items {
-        if !is_test_module(item) {
+        if !is_ignored_item(item) {
             match item {
                 Item::Mod(item_mod) => {
                     let submodule_name = &item_mod.ident;
@@ -348,7 +348,7 @@ fn parse_module_items(
     let mut module_content = TokenStream::new();
 
     for item in items {
-        if !is_test_module(item) {
+        if !is_ignored_item(item) {
             match item {
                 Item::Mod(item_mod) => {
                     let submodule_name = &item_mod.ident;
@@ -409,12 +409,59 @@ fn extract_cfg_attrs(attrs: &[Attribute]) -> Vec<&Attribute> {
         .collect()
 }
 
-fn is_test_module(item: &Item) -> bool {
-    if let Item::Mod(item_mod) = item {
-        item_mod.ident == "test" || item_mod.ident == "tests"
-    } else {
+// Helper function to check for #[cfg(test)]
+fn is_cfg_test_attr(attrs: &[Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        if attr.path().is_ident("cfg") {
+            // In syn 2.x, attr.meta directly gives the Meta item.
+            // For an attribute like #[cfg(test)], attr.meta is Meta::List.
+            // The meta_list.path would be `cfg` and meta_list.tokens would be `test`.
+            if let syn::Meta::List(meta_list) = &attr.meta {
+                // Ensure the attribute is specifically #[cfg(test)]
+                // meta_list.path is 'cfg'
+                // meta_list.tokens should be 'test'
+                if meta_list.tokens.to_string() == "test" {
+                    return true;
+                }
+            }
+        }
         false
+    })
+}
+
+// Combined function to check if an item should be ignored
+fn is_ignored_item(item: &Item) -> bool {
+    let attributes_to_check: Option<&Vec<Attribute>> = match item {
+        Item::Const(item_const) => Some(&item_const.attrs),
+        Item::Enum(item_enum) => Some(&item_enum.attrs),
+        Item::ExternCrate(item_extern_crate) => Some(&item_extern_crate.attrs),
+        Item::Fn(item_fn) => Some(&item_fn.attrs),
+        Item::ForeignMod(item_foreign_mod) => Some(&item_foreign_mod.attrs),
+        Item::Impl(item_impl) => Some(&item_impl.attrs),
+        Item::Macro(item_macro) => Some(&item_macro.attrs),
+        Item::Mod(item_mod) => {
+            // Special handling for module names like 'test' or 'tests'
+            if item_mod.ident == "test" || item_mod.ident == "tests" {
+                return true; // Always ignore modules named 'test' or 'tests'
+            }
+            Some(&item_mod.attrs) // Otherwise, check attributes of the module
+        }
+        Item::Static(item_static) => Some(&item_static.attrs),
+        Item::Struct(item_struct) => Some(&item_struct.attrs),
+        Item::Trait(item_trait) => Some(&item_trait.attrs),
+        Item::TraitAlias(item_trait_alias) => Some(&item_trait_alias.attrs),
+        Item::Type(item_type) => Some(&item_type.attrs),
+        Item::Union(item_union) => Some(&item_union.attrs),
+        Item::Use(item_use) => Some(&item_use.attrs),
+        _ => None, // For item types without attributes or not relevant for this check
+    };
+
+    if let Some(attrs) = attributes_to_check {
+        if is_cfg_test_attr(attrs) {
+            return true;
+        }
     }
+    false
 }
 
 fn process_package(
@@ -464,7 +511,7 @@ fn process_module(
         comment_tokens.to_tokens(output);
 
         for item in file.items {
-            if !is_test_module(&item) {
+            if !is_ignored_item(&item) {
                 match item {
                     Item::Mod(ItemMod { ident, content, .. }) => {
                         let submodule_path = if module_path == "crate" {
@@ -541,7 +588,7 @@ fn process_module_content(
         let file = syn::parse_file(&module_info.content.to_string())?;
 
         for item in file.items {
-            if !is_test_module(&item) {
+            if !is_ignored_item(&item) {
                 match item {
                     Item::Mod(ItemMod { ident, content, .. }) => {
                         let submodule_path = if module_path == "crate" {
